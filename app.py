@@ -46,7 +46,7 @@ def fetch_data(session, base_url_pre, row_id, base_url_post):
     }
 
     try:
-        response = session.get(full_url, timeout=10)
+        response = session.get(full_url, timeout=150)
         result["status_code"] = response.status_code
         
         try:
