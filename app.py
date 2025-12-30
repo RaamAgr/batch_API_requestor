@@ -35,6 +35,7 @@ def parse_extraction_data(json_input):
     """
     Parses specific fields from the JSON string or dict.
     Returns a dictionary with mobile, dispositions, and time.
+    Handles None/Null/Empty inputs gracefully.
     """
     # Initialize default values
     parsed = {
@@ -46,30 +47,41 @@ def parse_extraction_data(json_input):
     
     data = {}
     
-    # Handle input types (string vs dict)
+    # Safe JSON Loading Logic
     if isinstance(json_input, str):
         try:
-            data = json.loads(json_input)
+            # Check for empty strings or 'nan' strings
+            if not json_input.strip() or json_input.lower() == 'nan':
+                return parsed
+                
+            loaded_data = json.loads(json_input)
+            
+            # CRITICAL FIX: Ensure loaded data is actually a dictionary
+            # json.loads("null") returns None, which causes AttributeError later
+            if isinstance(loaded_data, dict):
+                data = loaded_data
+            else:
+                return parsed
         except:
             return parsed # Return empty if parsing fails
     elif isinstance(json_input, dict):
         data = json_input
     else:
+        # Handles NaN (float) or NoneType
         return parsed
 
-    # 1. Extract Mobile Number (Check top level or extraction)
-    # Adjust this key if your API sends mobile number in a specific field
+    # 1. Extract Mobile Number
     parsed["mobile_number"] = data.get("mobile_number") 
 
-    # 2. Extract Dispositions (Deep dive into extraction -> extracted_data)
+    # 2. Extract Dispositions
     extraction_block = data.get("extraction", {})
     if extraction_block and isinstance(extraction_block, dict):
         extracted_data = extraction_block.get("extracted_data", {})
-        if extracted_data:
+        if extracted_data and isinstance(extracted_data, dict):
             parsed["main_disposition"] = extracted_data.get("main_disposition")
             parsed["sub_disposition"] = extracted_data.get("sub_disposition")
 
-    # 3. Extract Time (Mapping conversation_time to updated_at)
+    # 3. Extract Time
     parsed["updated_at"] = data.get("conversation_time")
     
     return parsed
@@ -89,7 +101,7 @@ def fetch_data(session, base_url_pre, row_id, base_url_post):
     }
 
     try:
-        # Timeout increased to 200 seconds
+        # Timeout set to 200 seconds
         response = session.get(full_url, timeout=200)
         result["status_code"] = response.status_code
         
