@@ -35,7 +35,7 @@ def parse_extraction_data(json_input):
     """
     Parses specific fields from the JSON string or dict.
     Returns a dictionary with mobile, dispositions, and time.
-    Handles None/Null/Empty inputs gracefully.
+    INCLUDES ROBUST ERROR HANDLING to prevent AttributeErrors.
     """
     # Initialize default values
     parsed = {
@@ -47,41 +47,38 @@ def parse_extraction_data(json_input):
     
     data = {}
     
-    # Safe JSON Loading Logic
-    if isinstance(json_input, str):
-        try:
-            # Check for empty strings or 'nan' strings
-            if not json_input.strip() or json_input.lower() == 'nan':
-                return parsed
-                
-            loaded_data = json.loads(json_input)
-            
-            # CRITICAL FIX: Ensure loaded data is actually a dictionary
-            # json.loads("null") returns None, which causes AttributeError later
-            if isinstance(loaded_data, dict):
-                data = loaded_data
-            else:
-                return parsed
-        except:
-            return parsed # Return empty if parsing fails
-    elif isinstance(json_input, dict):
-        data = json_input
-    else:
-        # Handles NaN (float) or NoneType
-        return parsed
+    # 1. robustly determine 'data' dictionary
+    try:
+        if isinstance(json_input, dict):
+            data = json_input
+        elif isinstance(json_input, str):
+            # clean string and check for empty/nan
+            clean_str = json_input.strip()
+            if clean_str and clean_str.lower() != 'nan':
+                loaded = json.loads(clean_str)
+                # CRITICAL CHECK: ensure loaded json is actually a dict
+                if isinstance(loaded, dict):
+                    data = loaded
+    except Exception:
+        # If JSON parsing fails, we proceed with empty data dict
+        pass
 
-    # 1. Extract Mobile Number
+    # 2. Final Safety Check: Ensure data is a dictionary
+    if not isinstance(data, dict):
+        data = {}
+
+    # 3. Safe Extraction
+    # Now valid to call .get() because data is guaranteed to be a dict
     parsed["mobile_number"] = data.get("mobile_number") 
 
-    # 2. Extract Dispositions
-    extraction_block = data.get("extraction", {})
-    if extraction_block and isinstance(extraction_block, dict):
-        extracted_data = extraction_block.get("extracted_data", {})
-        if extracted_data and isinstance(extracted_data, dict):
+    # Safely access nested extraction
+    extraction = data.get("extraction")
+    if isinstance(extraction, dict):
+        extracted_data = extraction.get("extracted_data")
+        if isinstance(extracted_data, dict):
             parsed["main_disposition"] = extracted_data.get("main_disposition")
             parsed["sub_disposition"] = extracted_data.get("sub_disposition")
 
-    # 3. Extract Time
     parsed["updated_at"] = data.get("conversation_time")
     
     return parsed
