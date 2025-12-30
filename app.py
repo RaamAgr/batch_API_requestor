@@ -13,9 +13,10 @@ st.set_page_config(page_title="Batch API Runner & Viewer", layout="wide", page_i
 
 # --- Helper Functions ---
 
-def get_session_with_retries(retries=3, backoff_factor=0.3):
+def get_session_with_retries(retries=0, backoff_factor=0.3):
     """
-    Creates a requests session with automatic retry logic.
+    Creates a requests session.
+    Retries are set to 0 as requested.
     """
     session = requests.Session()
     retry = Retry(
@@ -88,7 +89,8 @@ def fetch_data(session, base_url_pre, row_id, base_url_post):
     }
 
     try:
-        response = session.get(full_url, timeout=10)
+        # Timeout increased to 200 seconds
+        response = session.get(full_url, timeout=200)
         result["status_code"] = response.status_code
         
         try:
@@ -219,7 +221,8 @@ if uploaded_file is not None:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                session = get_session_with_retries()
+                # Setup session with 0 retries
+                session = get_session_with_retries(retries=0)
                 total_rows = len(df)
                 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
