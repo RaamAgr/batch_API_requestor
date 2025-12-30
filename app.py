@@ -35,9 +35,9 @@ def parse_extraction_data(json_input):
     """
     Parses specific fields from the JSON string or dict.
     Returns a dictionary with mobile, dispositions, and time.
-    INCLUDES ROBUST ERROR HANDLING to prevent AttributeErrors.
+    Completely defensive against non-dict types (None, str, list, etc).
     """
-    # Initialize default values
+    # Defaults
     parsed = {
         "mobile_number": None,
         "main_disposition": None,
@@ -47,31 +47,38 @@ def parse_extraction_data(json_input):
     
     data = {}
     
-    # 1. robustly determine 'data' dictionary
+    # 1. SAFE PARSING LOGIC
     try:
         if isinstance(json_input, dict):
             data = json_input
         elif isinstance(json_input, str):
-            # clean string and check for empty/nan
             clean_str = json_input.strip()
-            if clean_str and clean_str.lower() != 'nan':
-                loaded = json.loads(clean_str)
-                # CRITICAL CHECK: ensure loaded json is actually a dict
-                if isinstance(loaded, dict):
-                    data = loaded
+            # Handle empty strings or pandas 'nan'
+            if not clean_str or clean_str.lower() == 'nan':
+                return parsed
+            
+            loaded = json.loads(clean_str)
+            
+            # CRITICAL: If json.loads returns None (from "null") or a list, ignore it.
+            if isinstance(loaded, dict):
+                data = loaded
+            else:
+                return parsed
+        else:
+            # If input is float(nan), None, List, etc.
+            return parsed
     except Exception:
-        # If JSON parsing fails, we proceed with empty data dict
-        pass
+        # If any parsing error occurs, return empty defaults
+        return parsed
 
-    # 2. Final Safety Check: Ensure data is a dictionary
+    # 2. DOUBLE CHECK: Ensure data is strictly a dict before using .get()
     if not isinstance(data, dict):
-        data = {}
+        return parsed
 
-    # 3. Safe Extraction
-    # Now valid to call .get() because data is guaranteed to be a dict
+    # 3. SAFE EXTRACTION
     parsed["mobile_number"] = data.get("mobile_number") 
 
-    # Safely access nested extraction
+    # Nested extraction with checks
     extraction = data.get("extraction")
     if isinstance(extraction, dict):
         extracted_data = extraction.get("extracted_data")
@@ -172,7 +179,6 @@ if uploaded_file is not None:
         st.info("📊 **View Mode Detected:** Parsing 'response_json' column...")
         
         # Parse the JSON column
-        # We use apply to run the parser on every row
         parsed_df = df["response_json"].apply(parse_extraction_data).apply(pd.Series)
         
         # Combine original data with parsed data
