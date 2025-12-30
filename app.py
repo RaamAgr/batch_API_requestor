@@ -4,8 +4,8 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import concurrent.futures
-import time
 import json
+import io
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Batch API Runner", layout="wide", page_icon="🚀")
@@ -73,10 +73,20 @@ def color_status(val):
     else:
         return 'background-color: #fff3cd; color: #856404' # Yellow (Other HTTP codes)
 
+def convert_df_to_excel(df):
+    """
+    Converts a dataframe to an in-memory Excel file.
+    """
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    processed_data = output.getvalue()
+    return processed_data
+
 # --- Main App Layout ---
 
 st.title("🚀 Parallel Batch API Runner")
-st.markdown("Run batch requests against your API by injecting IDs from a CSV.")
+st.markdown("Run batch requests against your API by injecting IDs from an Excel or CSV file.")
 
 st.divider()
 
@@ -92,17 +102,25 @@ with col1:
 with col2:
     st.subheader("2. Run Settings")
     num_workers = st.slider("Number of Parallel Workers", min_value=1, max_value=20, value=5)
-    uploaded_file = st.file_uploader("Upload CSV (Must contain 'id' column)", type=["csv"])
+    uploaded_file = st.file_uploader("Upload Data (Must contain 'id' column)", type=["csv", "xlsx"])
 
 st.divider()
 
 # 3. Execution Section
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
+    # Detect file type and load accordingly
+    try:
+        if uploaded_file.name.endswith('.csv'):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file)
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        st.stop()
     
     # Validation
     if 'id' not in df.columns:
-        st.error("❌ The uploaded CSV must contain a column named 'id'.")
+        st.error("❌ The uploaded file must contain a column named 'id'.")
     else:
         st.success(f"✅ Loaded {len(df)} rows ready for processing.")
         
@@ -155,7 +173,7 @@ if uploaded_file is not None:
             
             # Reorder columns to put interesting stuff first
             cols = ['id', 'status_code', 'response_json', 'full_url', 'error']
-            # Add any other columns from original csv that aren't in cols
+            # Add any other columns from original df that aren't in cols
             remaining_cols = [c for c in result_df.columns if c not in cols]
             result_df = result_df[cols + remaining_cols]
 
@@ -169,11 +187,11 @@ if uploaded_file is not None:
             )
 
             # --- Download ---
-            csv = result_df.to_csv(index=False).encode('utf-8')
+            excel_data = convert_df_to_excel(result_df)
             
             st.download_button(
-                label="📥 Download Results as CSV",
-                data=csv,
-                file_name="api_results.csv",
-                mime="text/csv",
+                label="📥 Download Results as Excel",
+                data=excel_data,
+                file_name="api_results.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
