@@ -225,8 +225,7 @@ with right:
 
     run_btn = st.button("▶ Start Batch API Calls", use_container_width=True)
 
-    results_placeholder = st.empty()
-    stats_placeholder   = st.empty()
+    results_area = st.container()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -280,7 +279,8 @@ if run_btn:
                 return substitute(d, value)
             return d
 
-        result_html_parts = []
+        # Live status text — updated cheaply each row (no big HTML re-render)
+        live_status = results_area.empty()
 
         for idx, val in enumerate(column_values):
             url = substitute(endpoint, val)
@@ -300,10 +300,8 @@ if run_btn:
                 except Exception:
                     content = resp.text[:2000] or "(empty response)"
 
-                row_class = "success" if resp.ok else "error"
-                badge_class = "badge-success" if resp.ok else "badge-error"
-                badge_label = f"{status} OK" if resp.ok else f"{status} ERR"
-                if resp.ok:
+                row_ok = resp.ok
+                if row_ok:
                     success_count += 1
                 else:
                     error_count += 1
@@ -313,62 +311,71 @@ if run_btn:
                     "value": val,
                     "url": url,
                     "status": status,
-                    "ok": resp.ok,
+                    "ok": row_ok,
                     "response": content,
                 })
 
-                result_html_parts.append(f"""
-                <div class="result-row {row_class}">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span style="color:#e2e8f0;font-weight:600;">Row {idx+1} — <code style="color:#c4b5fd;">{val}</code></span>
-                        <span class="badge {badge_class}">{badge_label}</span>
-                    </div>
-                    <div style="color:#94a3b8;font-size:0.78rem;margin-top:4px;">🔗 {url}</div>
-                    <details style="margin-top:6px;">
-                        <summary>View response</summary>
-                        <pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;
-                                    font-size:0.78rem;color:#a5f3fc;overflow-x:auto;margin-top:6px;">{content[:1500]}{'…' if len(content)>1500 else ''}</pre>
-                    </details>
-                </div>
-                """)
-
             except requests.exceptions.RequestException as exc:
                 error_count += 1
+                content = str(exc)
                 results.append({
                     "row": idx + 1,
                     "value": val,
                     "url": url,
                     "status": "ERR",
                     "ok": False,
-                    "response": str(exc),
+                    "response": content,
                 })
-                result_html_parts.append(f"""
-                <div class="result-row error">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span style="color:#e2e8f0;font-weight:600;">Row {idx+1} — <code style="color:#c4b5fd;">{val}</code></span>
-                        <span class="badge badge-error">REQUEST ERROR</span>
-                    </div>
-                    <div style="color:#94a3b8;font-size:0.78rem;margin-top:4px;">🔗 {url}</div>
-                    <div style="color:#fca5a5;font-size:0.8rem;margin-top:6px;">{str(exc)}</div>
-                </div>
-                """)
 
-            # Update progress
+            # Update progress bar + a tiny status line (cheap, no big DOM)
             pct = (idx + 1) / total
             progress_bar.progress(pct, text=f"Processing row {idx+1} of {total}…")
-
-            # Live update results
-            results_placeholder.markdown(
-                "".join(result_html_parts), unsafe_allow_html=True
+            live_status.markdown(
+                f"<span style='color:#94a3b8;font-size:0.85rem;'>"
+                f"⏳ Row **{idx+1}** / {total} &nbsp;·&nbsp; "
+                f"<span style='color:#10b981;'>✔ {success_count}</span> &nbsp; "
+                f"<span style='color:#ef4444;'>✖ {error_count}</span></span>",
+                unsafe_allow_html=True,
             )
 
             if delay > 0 and idx < total - 1:
                 time.sleep(delay)
 
+        # ── Render results as a virtual-scroll dataframe (scales to any size) ──
+        live_status.empty()
+        df_results = pd.DataFrame(results)
+
+        # Friendly column order & labels
+        df_display = df_results[["row", "value", "status", "ok", "url", "response"]].rename(
+            columns={
+                "row": "#",
+                "value": "Input Value",
+                "status": "Status",
+                "ok": "Success",
+                "url": "URL Called",
+                "response": "Response",
+            }
+        )
+
+        with results_area:
+            st.dataframe(
+                df_display,
+                use_container_width=True,
+                height=min(600, 40 + len(df_display) * 35),
+                column_config={
+                    "#": st.column_config.NumberColumn(width="small"),
+                    "Success": st.column_config.CheckboxColumn(width="small"),
+                    "Status": st.column_config.TextColumn(width="small"),
+                    "Input Value": st.column_config.TextColumn(width="medium"),
+                    "URL Called": st.column_config.TextColumn(width="large"),
+                    "Response": st.column_config.TextColumn(width="large"),
+                },
+            )
+
         progress_bar.empty()
 
         # ── Summary stats ────────────────────────────────
-        stats_placeholder.markdown(f"""
+        right.markdown(f"""
         <div style='display:flex;gap:1rem;margin-top:0.5rem;'>
             <div style='flex:1;background:rgba(16,185,129,0.15);border:1px solid #065f46;
                         border-radius:12px;padding:1rem;text-align:center;'>
@@ -388,14 +395,26 @@ if run_btn:
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Download results as CSV ──────────────────────
-        df_results = pd.DataFrame(results)
+        # ── Download results ─────────────────────────────
         csv_bytes = df_results.to_csv(index=False).encode("utf-8")
 
-        right.download_button(
-            label="⬇ Download Results as CSV",
+        xlsx_buf = BytesIO()
+        with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
+            df_results.to_excel(writer, index=False, sheet_name="Results")
+        xlsx_bytes = xlsx_buf.getvalue()
+
+        dl_col1, dl_col2 = right.columns(2)
+        dl_col1.download_button(
+            label="⬇ Download CSV",
             data=csv_bytes,
             file_name="api_batch_results.csv",
             mime="text/csv",
+            use_container_width=True,
+        )
+        dl_col2.download_button(
+            label="⬇ Download Excel",
+            data=xlsx_bytes,
+            file_name="api_batch_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
