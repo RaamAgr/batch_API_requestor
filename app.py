@@ -304,7 +304,7 @@ if run_btn:
             try:
                 resp = requests.request(
                     method, url, headers=headers,
-                    json=body if body else None, timeout=15,
+                    json=body if body else None, timeout=60,
                 )
                 status = resp.status_code
                 row_ok = resp.ok
