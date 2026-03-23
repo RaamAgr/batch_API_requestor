@@ -320,6 +320,8 @@ if run_btn:
                     "status": status, "ok": row_ok, "response": content}
 
         results = []
+        last_update_time = 0.0
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=int(max_workers)) as executor:
             future_to_idx = {
                 executor.submit(call_api, idx, val): idx
@@ -337,16 +339,19 @@ if run_btn:
                     completed += 1
                     _done = completed
 
-                # Update progress from main thread (as_completed runs in main thread)
-                pct = _done / total
-                progress_bar.progress(pct, text=f"Completed {_done} of {total}…")
-                live_status.markdown(
-                    f"<span style='color:#94a3b8;font-size:0.85rem;'>"
-                    f"⏳ **{_done}** / {total} done &nbsp;·&nbsp; "
-                    f"<span style='color:#10b981;'>✔ {success_count}</span> &nbsp; "
-                    f"<span style='color:#ef4444;'>✖ {error_count}</span></span>",
-                    unsafe_allow_html=True,
-                )
+                # Update progress from main thread (throttled to prevent WebSocket flood)
+                current_time = time.time()
+                if current_time - last_update_time > 0.1 or _done == total:
+                    pct = _done / total
+                    progress_bar.progress(pct, text=f"Completed {_done} of {total}…")
+                    live_status.markdown(
+                        f"<span style='color:#94a3b8;font-size:0.85rem;'>"
+                        f"⏳ **{_done}** / {total} done &nbsp;·&nbsp; "
+                        f"<span style='color:#10b981;'>✔ {success_count}</span> &nbsp; "
+                        f"<span style='color:#ef4444;'>✖ {error_count}</span></span>",
+                        unsafe_allow_html=True,
+                    )
+                    last_update_time = current_time
 
         # Sort results back to original row order
         results.sort(key=lambda r: r["row"])
