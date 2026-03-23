@@ -341,36 +341,39 @@ if run_btn:
             if delay > 0 and idx < total - 1:
                 time.sleep(delay)
 
-        # ── Render results as a virtual-scroll dataframe (scales to any size) ──
+        # ── Render all cards once at the end inside a fixed-height scroll box ──
         live_status.empty()
         df_results = pd.DataFrame(results)
 
-        # Friendly column order & labels
-        df_display = df_results[["row", "value", "status", "ok", "url", "response"]].rename(
-            columns={
-                "row": "#",
-                "value": "Input Value",
-                "status": "Status",
-                "ok": "Success",
-                "url": "URL Called",
-                "response": "Response",
-            }
-        )
+        card_parts = []
+        for r in results:
+            row_class   = "success" if r["ok"] else "error"
+            badge_class = "badge-success" if r["ok"] else "badge-error"
+            badge_label = f"{r['status']} OK" if r["ok"] else f"{r['status']} ERR"
+            truncated   = r["response"][:1500] + ("…" if len(r["response"]) > 1500 else "")
+            card_parts.append(f"""
+            <div class="result-row {row_class}">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="color:#e2e8f0;font-weight:600;">Row {r['row']} — <code style="color:#c4b5fd;">{r['value']}</code></span>
+                    <span class="badge {badge_class}">{badge_label}</span>
+                </div>
+                <div style="color:#94a3b8;font-size:0.78rem;margin-top:4px;">🔗 {r['url']}</div>
+                <details style="margin-top:6px;">
+                    <summary>View response</summary>
+                    <pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;
+                                font-size:0.78rem;color:#a5f3fc;overflow-x:auto;margin-top:6px;">{truncated}</pre>
+                </details>
+            </div>
+            """)
 
+        # Scrollable fixed-height container — page never grows beyond this
+        scrollable_html = f"""
+        <div style="max-height:600px;overflow-y:auto;padding-right:4px;">
+            {"".join(card_parts)}
+        </div>
+        """
         with results_area:
-            st.dataframe(
-                df_display,
-                use_container_width=True,
-                height=min(600, 40 + len(df_display) * 35),
-                column_config={
-                    "#": st.column_config.NumberColumn(width="small"),
-                    "Success": st.column_config.CheckboxColumn(width="small"),
-                    "Status": st.column_config.TextColumn(width="small"),
-                    "Input Value": st.column_config.TextColumn(width="medium"),
-                    "URL Called": st.column_config.TextColumn(width="large"),
-                    "Response": st.column_config.TextColumn(width="large"),
-                },
-            )
+            st.markdown(scrollable_html, unsafe_allow_html=True)
 
         progress_bar.empty()
 
