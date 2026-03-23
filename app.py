@@ -3,6 +3,8 @@ import pandas as pd
 import requests
 import json
 import time
+import threading
+import concurrent.futures
 from io import BytesIO
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -162,11 +164,14 @@ with left:
     st.markdown("---")
     st.markdown('<div class="section-title">⚙️ Request Settings</div>', unsafe_allow_html=True)
 
-    col_method, col_delay = st.columns(2)
+    col_method, col_delay, col_workers = st.columns(3)
     with col_method:
         method = st.selectbox("HTTP Method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
     with col_delay:
-        delay = st.number_input("Delay between calls (s)", min_value=0.0, max_value=10.0, value=0.3, step=0.1)
+        delay = st.number_input("Delay per worker (s)", min_value=0.0, max_value=10.0, value=0.3, step=0.1)
+    with col_workers:
+        max_workers = st.number_input("Parallel Workers", min_value=1, max_value=20, value=1, step=1,
+                                      help="Number of concurrent API calls. Use 1 for sequential.")
 
     headers_raw = st.text_area(
         "Custom Headers (JSON)",
@@ -225,7 +230,7 @@ with right:
 
     run_btn = st.button("▶ Start Batch API Calls", use_container_width=True)
 
-    results_placeholder = st.empty()
+    results_area = st.container()   # cards render here, persisted via session_state
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -256,6 +261,10 @@ if run_btn:
         for e in errors:
             st.error(e)
     else:
+        # Clear any previous run
+        st.session_state.pop("batch_results", None)
+        st.session_state.pop("batch_stats", None)
+
         results = []
         success_count = 0
         error_count   = 0
@@ -263,6 +272,7 @@ if run_btn:
         placeholder_keys = re.findall(r"\{([^}]+)\}", endpoint) or []
 
         progress_bar = right.progress(0, text="Starting…")
+        live_status  = right.empty()
         total = len(column_values)
 
         def substitute(template_str, value):
@@ -279,132 +289,146 @@ if run_btn:
                 return substitute(d, value)
             return d
 
-        # Live status text — updated cheaply each row (no big HTML re-render)
-        live_status = results_placeholder
+        # ── Thread-safe counters for parallel progress tracking ──
+        lock          = threading.Lock()
+        success_count = 0
+        error_count   = 0
+        completed     = 0
 
-        for idx, val in enumerate(column_values):
-            url = substitute(endpoint, val)
+        def call_api(idx, val):
+            """Make one API call and return a result dict."""
+            url  = substitute(endpoint, val)
             body = substitute_dict(body_template, val) if body_template else None
-
+            if delay > 0:
+                time.sleep(delay)
             try:
                 resp = requests.request(
-                    method,
-                    url,
-                    headers=headers,
-                    json=body if body else None,
-                    timeout=15,
+                    method, url, headers=headers,
+                    json=body if body else None, timeout=15,
                 )
                 status = resp.status_code
+                row_ok = resp.ok
                 try:
                     content = json.dumps(resp.json(), indent=2)
                 except Exception:
                     content = resp.text[:2000] or "(empty response)"
-
-                row_ok = resp.ok
-                if row_ok:
-                    success_count += 1
-                else:
-                    error_count += 1
-
-                results.append({
-                    "row": idx + 1,
-                    "value": val,
-                    "url": url,
-                    "status": status,
-                    "ok": row_ok,
-                    "response": content,
-                })
-
             except requests.exceptions.RequestException as exc:
-                error_count += 1
+                status  = "ERR"
+                row_ok  = False
                 content = str(exc)
-                results.append({
-                    "row": idx + 1,
-                    "value": val,
-                    "url": url,
-                    "status": "ERR",
-                    "ok": False,
-                    "response": content,
-                })
+            return {"row": idx + 1, "value": val, "url": url,
+                    "status": status, "ok": row_ok, "response": content}
 
-            # Update progress bar + a tiny status line (cheap, no big DOM)
-            pct = (idx + 1) / total
-            progress_bar.progress(pct, text=f"Processing row {idx+1} of {total}…")
-            live_status.markdown(
-                f"<span style='color:#94a3b8;font-size:0.85rem;'>"
-                f"⏳ Row **{idx+1}** / {total} &nbsp;·&nbsp; "
-                f"<span style='color:#10b981;'>✔ {success_count}</span> &nbsp; "
-                f"<span style='color:#ef4444;'>✖ {error_count}</span></span>",
-                unsafe_allow_html=True,
-            )
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=int(max_workers)) as executor:
+            future_to_idx = {
+                executor.submit(call_api, idx, val): idx
+                for idx, val in enumerate(column_values)
+            }
+            for future in concurrent.futures.as_completed(future_to_idx):
+                result = future.result()
+                results.append(result)
 
-            if delay > 0 and idx < total - 1:
-                time.sleep(delay)
+                with lock:
+                    if result["ok"]:
+                        success_count += 1
+                    else:
+                        error_count += 1
+                    completed += 1
+                    _done = completed
 
-        # ── Render all cards once at the end inside a fixed-height scroll box ──
+                # Update progress from main thread (as_completed runs in main thread)
+                pct = _done / total
+                progress_bar.progress(pct, text=f"Completed {_done} of {total}…")
+                live_status.markdown(
+                    f"<span style='color:#94a3b8;font-size:0.85rem;'>"
+                    f"⏳ **{_done}** / {total} done &nbsp;·&nbsp; "
+                    f"<span style='color:#10b981;'>✔ {success_count}</span> &nbsp; "
+                    f"<span style='color:#ef4444;'>✖ {error_count}</span></span>",
+                    unsafe_allow_html=True,
+                )
+
+        # Sort results back to original row order
+        results.sort(key=lambda r: r["row"])
+
+        progress_bar.empty()
         live_status.empty()
-        df_results = pd.DataFrame(results)
 
-        card_parts = []
-        for r in results:
-            row_class   = "success" if r["ok"] else "error"
-            badge_class = "badge-success" if r["ok"] else "badge-error"
-            badge_label = f"{r['status']} OK" if r["ok"] else f"{r['status']} ERR"
-            truncated   = r["response"][:1500] + ("…" if len(r["response"]) > 1500 else "")
-            card_parts.append(f"""
-            <div class="result-row {row_class}">
-                <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <span style="color:#e2e8f0;font-weight:600;">Row {r['row']} — <code style="color:#c4b5fd;">{r['value']}</code></span>
-                    <span class="badge {badge_class}">{badge_label}</span>
-                </div>
-                <div style="color:#94a3b8;font-size:0.78rem;margin-top:4px;">🔗 {r['url']}</div>
-                <details style="margin-top:6px;">
-                    <summary>View response</summary>
-                    <pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;
-                                font-size:0.78rem;color:#a5f3fc;overflow-x:auto;margin-top:6px;">{truncated}</pre>
-                </details>
+        # Persist results so they survive the next rerender
+        st.session_state["batch_results"] = results
+        st.session_state["batch_stats"]   = {
+            "success": success_count,
+            "error":   error_count,
+            "total":   total,
+        }
+        st.rerun()   # trigger a clean rerender to display persisted results
+
+
+# ── Render persisted results (shown on every rerender after a completed run) ──
+if "batch_results" in st.session_state:
+    stored   = st.session_state["batch_results"]
+    stats    = st.session_state["batch_stats"]
+    df_results = pd.DataFrame(stored)
+
+    # Build card HTML
+    card_parts = []
+    for r in stored:
+        row_class   = "success" if r["ok"] else "error"
+        badge_class = "badge-success" if r["ok"] else "badge-error"
+        badge_label = f"{r['status']} OK" if r["ok"] else f"{r['status']} ERR"
+        truncated   = r["response"][:1500] + ("…" if len(r["response"]) > 1500 else "")
+        card_parts.append(f"""
+        <div class="result-row {row_class}">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="color:#e2e8f0;font-weight:600;">Row {r['row']} — <code style="color:#c4b5fd;">{r['value']}</code></span>
+                <span class="badge {badge_class}">{badge_label}</span>
             </div>
-            """)
+            <div style="color:#94a3b8;font-size:0.78rem;margin-top:4px;">🔗 {r['url']}</div>
+            <details style="margin-top:6px;">
+                <summary>View response</summary>
+                <pre style="background:rgba(0,0,0,0.3);padding:10px;border-radius:8px;
+                            font-size:0.78rem;color:#a5f3fc;overflow-x:auto;margin-top:6px;">{truncated}</pre>
+            </details>
+        </div>
+        """)
 
-        # Write cards into the same placeholder — replaces the live status in-place
-        results_placeholder.markdown(f"""
+    with results_area:
+        # Fixed-height scrollable cards — page stays compact no matter the row count
+        st.markdown(f"""
         <div style="max-height:600px;overflow-y:auto;padding-right:4px;">
             {"".join(card_parts)}
         </div>
         """, unsafe_allow_html=True)
 
-        progress_bar.empty()
-
-        # ── Summary stats ────────────────────────────────
-        right.markdown(f"""
-        <div style='display:flex;gap:1rem;margin-top:0.5rem;'>
+        # Summary stats
+        st.markdown(f"""
+        <div style='display:flex;gap:1rem;margin-top:1rem;'>
             <div style='flex:1;background:rgba(16,185,129,0.15);border:1px solid #065f46;
                         border-radius:12px;padding:1rem;text-align:center;'>
-                <div style='font-size:2rem;font-weight:700;color:#10b981;'>{success_count}</div>
+                <div style='font-size:2rem;font-weight:700;color:#10b981;'>{stats['success']}</div>
                 <div style='color:#6ee7b7;font-size:0.8rem;'>Successful</div>
             </div>
             <div style='flex:1;background:rgba(239,68,68,0.15);border:1px solid #7f1d1d;
                         border-radius:12px;padding:1rem;text-align:center;'>
-                <div style='font-size:2rem;font-weight:700;color:#ef4444;'>{error_count}</div>
+                <div style='font-size:2rem;font-weight:700;color:#ef4444;'>{stats['error']}</div>
                 <div style='color:#fca5a5;font-size:0.8rem;'>Errors</div>
             </div>
             <div style='flex:1;background:rgba(99,102,241,0.15);border:1px solid #3730a3;
                         border-radius:12px;padding:1rem;text-align:center;'>
-                <div style='font-size:2rem;font-weight:700;color:#a78bfa;'>{total}</div>
+                <div style='font-size:2rem;font-weight:700;color:#a78bfa;'>{stats['total']}</div>
                 <div style='color:#c4b5fd;font-size:0.8rem;'>Total Rows</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Download results ─────────────────────────────
-        csv_bytes = df_results.to_csv(index=False).encode("utf-8")
-
-        xlsx_buf = BytesIO()
+        # Download buttons
+        csv_bytes  = df_results.to_csv(index=False).encode("utf-8")
+        xlsx_buf   = BytesIO()
         with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
             df_results.to_excel(writer, index=False, sheet_name="Results")
         xlsx_bytes = xlsx_buf.getvalue()
 
-        dl_col1, dl_col2 = right.columns(2)
+        dl_col1, dl_col2 = st.columns(2)
         dl_col1.download_button(
             label="⬇ Download CSV",
             data=csv_bytes,
