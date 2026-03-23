@@ -225,7 +225,7 @@ with right:
 
     run_btn = st.button("▶ Start Batch API Calls", use_container_width=True)
 
-    results_area = st.container()
+    results_placeholder = st.empty()
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -280,7 +280,7 @@ if run_btn:
             return d
 
         # Live status text — updated cheaply each row (no big HTML re-render)
-        live_status = results_area.empty()
+        live_status = results_placeholder
 
         for idx, val in enumerate(column_values):
             url = substitute(endpoint, val)
@@ -366,14 +366,12 @@ if run_btn:
             </div>
             """)
 
-        # Scrollable fixed-height container — page never grows beyond this
-        scrollable_html = f"""
+        # Write cards into the same placeholder — replaces the live status in-place
+        results_placeholder.markdown(f"""
         <div style="max-height:600px;overflow-y:auto;padding-right:4px;">
             {"".join(card_parts)}
         </div>
-        """
-        with results_area:
-            st.markdown(scrollable_html, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
         progress_bar.empty()
 
